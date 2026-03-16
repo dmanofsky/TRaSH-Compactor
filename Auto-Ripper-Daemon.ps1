@@ -2,19 +2,20 @@
 # SCRIPT 1: AUTO-RIPPER DAEMON (The "Dumb" Ingest)
 # PURPOSE: Runs endlessly in the background. Watches the optical drive. 
 #          When a disc is inserted, it rips the raw files to the NVMe, 
-#          ejects the tray, and waits for the next disc. Zero logic required.
+#          ejects the tray, and waits for the next disc. 
 # ==============================================================================
 
-$opticalDrive = "I" 
+# --- Configuration (CHANGE THESE PER DRIVE) ---
+$opticalDrive = "I"             # The Windows drive letter (e.g., I, J, K)
+$discId = "disc:0"              # MakeMKV's internal ID (disc:0, disc:1, etc.)
+# ----------------------------------------------
+
 $backupRoot = "D:\media\backups"
-$makemkvExe = "C:\Program Files (x86)\MakeMKV\makemkvcon64.exe"
+$makemkvExe = "C:\Program Files (x86)\MakeMKV\makemkvcon.exe"
 
 Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host "      INGEST DAEMON (RIPPER) ONLINE      " -ForegroundColor Cyan
+Write-Host " INGEST DAEMON ($opticalDrive`: -> $discId) ONLINE " -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
-
-# Kill any ghost MakeMKV processes before starting
-Stop-Process -Name "makemkv", "makemkvcon" -Force -ErrorAction SilentlyContinue
 
 $fso = New-Object -ComObject Scripting.FileSystemObject
 
@@ -27,7 +28,6 @@ while ($true) {
         
         $backupPath = Join-Path $backupRoot $volumeName
         
-        # Check if this folder already exists to prevent an infinite rip loop
         if (Test-Path $backupPath) {
             Write-Host "  > [SKIP] $volumeName is already backed up." -ForegroundColor DarkGray
             Start-Sleep -Seconds 30
@@ -39,8 +39,9 @@ while ($true) {
         
         New-Item -ItemType Directory -Path $backupPath | Out-Null
         
-        # The actual rip command
-        & $makemkvExe backup --decrypt --cache=1 disc:0 $backupPath
+        # --- THE PARAMETERIZED COMMAND ---
+        # Notice how $discId perfectly drops into the execution string
+        & $makemkvExe backup --decrypt --cache=1 $discId $backupPath
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "  > [SUCCESS] Backup complete!" -ForegroundColor Green
@@ -51,6 +52,5 @@ while ($true) {
         }
     }
     
-    # Rest for 10 seconds before checking the drive again
     Start-Sleep -Seconds 10
 }
