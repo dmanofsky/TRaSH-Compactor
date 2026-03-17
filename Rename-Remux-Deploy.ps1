@@ -1,9 +1,9 @@
 # ==============================================================================
 # SCRIPT: The Smart Processor (Rename, Remux, Deploy)
-# VERSION: 1.5.1
+# VERSION: 1.5.2
 # PURPOSE: Master Batch Queuing, GUI-style MakeMKV terminal output,
-#          bulletproof multi-stream resolution & HDR detection, 
-#          auto-pulls TMDB episode titles, deploys to TrueNAS via Robocopy.
+#          bulletproof HDR fallback logic for UHD discs, auto-pulls TMDB 
+#          episode titles, bypasses API bot-blocks, deploys to TrueNAS.
 # ==============================================================================
 
 # --- Configuration ---
@@ -21,7 +21,7 @@ $makemkvExe = "C:\Program Files (x86)\MakeMKV\makemkvcon.exe"
 $browserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 Write-Host "=========================================" -ForegroundColor Magenta
-Write-Host "  SMART BATCH PROCESSOR (v1.5.1) ONLINE  " -ForegroundColor Magenta
+Write-Host "  SMART BATCH PROCESSOR (v1.5.2) ONLINE  " -ForegroundColor Magenta
 Write-Host "=========================================" -ForegroundColor Magenta
 
 $backups = Get-ChildItem -Path $backupRoot -Directory
@@ -181,9 +181,9 @@ foreach ($folder in $backups) {
         $res = "1080p" 
         $hdr = ""
         
-        # --- FIX: Omit the stream index constraint so it searches ALL streams attached to the title ---
+        # Expanded Regex to catch the 10-bit HEVC profile used for HDR
         $regexRes = '^SINFO:' + $id + ',\d+,19,\d+,"(\d+)x'
-        $regexHdr = '(?i)^SINFO:' + $id + ',.*?(HDR|Dolby Vision|BT\.?2020|SMPTE)'
+        $regexHdr = '(?i)^SINFO:' + $id + ',\d+,.*?(HDR|Dolby Vision|BT\.?2020|SMPTE|Main 10)'
         
         foreach ($line in $scanOutput) {
             if ($line -match $regexRes) {
@@ -195,6 +195,14 @@ foreach ($folder in $backups) {
             }
             if ($line -match $regexHdr) { $hdr = " HDR" }
         }
+
+        # --- FIX: The "Dumb Disc" Fallback ---
+        # If MakeMKV's quick-scan skipped the deep colorimetry packets, we 
+        # force the HDR tag for 2160p because all raw 4K rips are HDR natively.
+        if ($res -eq "2160p" -and $hdr -eq "") {
+            $hdr = " HDR"
+        }
+        
         $qualitySuffix = "$res Remux$hdr"
         
         if ($selectedMedia.media_type -eq 'movie') {
