@@ -1,9 +1,9 @@
 # ==============================================================================
 # SCRIPT: The Smart Processor (Rename, Remux, Deploy)
-# VERSION: 1.5.0
+# VERSION: 1.5.1
 # PURPOSE: Master Batch Queuing, GUI-style MakeMKV terminal output,
-#          auto-detects resolution/HDR, auto-pulls TMDB episode titles, 
-#          bypasses API bot-blocks (User-Agent), deploys to TrueNAS.
+#          bulletproof multi-stream resolution & HDR detection, 
+#          auto-pulls TMDB episode titles, deploys to TrueNAS via Robocopy.
 # ==============================================================================
 
 # --- Configuration ---
@@ -21,7 +21,7 @@ $makemkvExe = "C:\Program Files (x86)\MakeMKV\makemkvcon.exe"
 $browserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 Write-Host "=========================================" -ForegroundColor Magenta
-Write-Host "  SMART BATCH PROCESSOR (v1.5.0) ONLINE  " -ForegroundColor Magenta
+Write-Host "  SMART BATCH PROCESSOR (v1.5.1) ONLINE  " -ForegroundColor Magenta
 Write-Host "=========================================" -ForegroundColor Magenta
 
 $backups = Get-ChildItem -Path $backupRoot -Directory
@@ -111,11 +111,9 @@ foreach ($folder in $backups) {
     $titleData = @{}
     $fplTitleId = -1
 
-    # Replicating the GUI Output
     foreach ($line in $scanOutput) {
         if ($line -match 'TINFO:(\d+),.*FPL_MainFeature') { $fplTitleId = [int]$matches[1] }
         
-        # Regex to capture ID, Code, and Value
         if ($line -match 'TINFO:(\d+),(\d+),0,"([^"]+)"') {
             $tId = [int]$matches[1]
             $code = [int]$matches[2]
@@ -144,7 +142,6 @@ foreach ($folder in $backups) {
         if ($fplTitleId -ne -1) {
             $targetIds += $fplTitleId
         } else {
-            # Grab the longest title
             $longestTitle = $titleData.Values | Sort-Object Duration -Descending | Select-Object -First 1
             $targetIds += $longestTitle.Id
         }
@@ -154,7 +151,6 @@ foreach ($folder in $backups) {
         Write-Host "`n  --- TV SHOW DETECTED ---" -ForegroundColor Cyan
         $seasonNum = [int](Read-Host "  > What Season is this disc? (e.g., 1)")
         
-        # --- FIX: Formatted String to prevent URI destruction ---
         $seasonUri = "https://api.themoviedb.org/3/tv/{0}/season/{1}?api_key={2}" -f $tmdbId, $seasonNum, $tmdbApiKey
         try {
             $seasonData = Invoke-RestMethod -Uri $seasonUri -UserAgent $browserAgent -ErrorAction Stop
@@ -165,7 +161,6 @@ foreach ($folder in $backups) {
         
         Write-Host "`n  > Detected the following possible episodes on disc:" -ForegroundColor Yellow
         foreach ($ep in $episodes) {
-            # THIS REPLICATES THE MAKEMKV GUI
             Write-Host "    [ID: $($ep.Id)] - $($ep.Chapters) chapter(s) , $($ep.SizeStr) (Duration: $($ep.DurationStr))"
         }
         
@@ -185,8 +180,10 @@ foreach ($folder in $backups) {
         
         $res = "1080p" 
         $hdr = ""
-        $regexRes = 'SINFO:' + $id + ',0,19,0,"(\d+)x'
-        $regexHdr = 'SINFO:' + $id + ',0,.*?(HDR|HDR10|Dolby Vision|BT\.2020|SMPTE2084)'
+        
+        # --- FIX: Omit the stream index constraint so it searches ALL streams attached to the title ---
+        $regexRes = '^SINFO:' + $id + ',\d+,19,\d+,"(\d+)x'
+        $regexHdr = '(?i)^SINFO:' + $id + ',.*?(HDR|Dolby Vision|BT\.?2020|SMPTE)'
         
         foreach ($line in $scanOutput) {
             if ($line -match $regexRes) {
@@ -234,7 +231,6 @@ foreach ($folder in $backups) {
         $plannedFiles += [PSCustomObject]@{ Id = $id; LocalFolder = $localTargetDir; TrueNASFolder = $truenasTargetDir; FileName = $fileName }
     }
 
-    # Add this entire disc's plan to the Master Queue
     $MasterQueue += [PSCustomObject]@{
         VolumeName = $volumeName
         BackupPath = $backupPath
@@ -292,7 +288,6 @@ foreach ($job in $MasterQueue) {
         }
     }
     
-    # Cleanup empty staging folders for this job
     if ($job.Plans.Count -gt 0) {
         $lastLocalFolder = $job.Plans[-1].LocalFolder
         if ($lastLocalFolder -ne "" -and (Test-Path $lastLocalFolder) -and (Get-ChildItem $lastLocalFolder).Count -eq 0) {
