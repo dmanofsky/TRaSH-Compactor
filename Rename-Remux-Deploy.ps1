@@ -1,9 +1,9 @@
 # ==============================================================================
 # SCRIPT: The Smart Processor (Rename, Remux, Deploy)
-# VERSION: 1.4.0
+# VERSION: 1.4.1
 # PURPOSE: Scans raw backups, queries TMDB, interactive pre-flight checks,
 #          auto-detects resolution/HDR, auto-pulls TMDB episode titles, 
-#          remuxes MKVs with TRaSH Guide standards, deploys to TrueNAS.
+#          bulletproof API exception handling, deploys to TrueNAS.
 # ==============================================================================
 
 # --- Configuration ---
@@ -20,7 +20,7 @@ $truenasBackups = "\\TRUENAS\media\backups"
 $makemkvExe = "C:\Program Files (x86)\MakeMKV\makemkvcon.exe"
 
 Write-Host "=========================================" -ForegroundColor Magenta
-Write-Host "     SMART PROCESSOR (v1.4.0) ONLINE     " -ForegroundColor Magenta
+Write-Host "     SMART PROCESSOR (v1.4.1) ONLINE     " -ForegroundColor Magenta
 Write-Host "=========================================" -ForegroundColor Magenta
 
 $backups = Get-ChildItem -Path $backupRoot -Directory
@@ -46,14 +46,26 @@ foreach ($folder in $backups) {
     Write-Host "  > Querying TMDB for: '$cleanQuery'..." -ForegroundColor DarkGray
     
     $uri = "https://api.themoviedb.org/3/search/multi?api_key=$tmdbApiKey&query=$cleanQuery&language=en-US&page=1"
-    $response = Invoke-RestMethod -Uri $uri -ErrorAction SilentlyContinue
+    
+    # Robust Try/Catch for the Search API
+    try {
+        $response = Invoke-RestMethod -Uri $uri -ErrorAction Stop
+    } catch {
+        $response = $null
+    }
 
     if (-not $response -or $response.results.Count -eq 0) {
-        Write-Host "  > [WARNING] TMDB found no results." -ForegroundColor Yellow
+        Write-Host "  > [WARNING] TMDB found no results or API Key is invalid." -ForegroundColor Yellow
         $cleanQuery = Read-Host "Enter manual search term (or press Enter to skip)"
         if ([string]::IsNullOrWhiteSpace($cleanQuery)) { continue }
+        
         $uri = "https://api.themoviedb.org/3/search/multi?api_key=$tmdbApiKey&query=$cleanQuery&language=en-US&page=1"
-        $response = Invoke-RestMethod -Uri $uri
+        try {
+            $response = Invoke-RestMethod -Uri $uri -ErrorAction Stop
+        } catch {
+            Write-Host "  > [ERROR] TMDB request failed. Check internet or API key." -ForegroundColor Red
+            continue
+        }
     }
 
     $results = $response.results | Select-Object -First 5
@@ -115,15 +127,19 @@ foreach ($folder in $backups) {
             $targetIds += $longestTitle.Id
         }
     } else {
-        # --- FIX: TV SHOW MANUAL SELECTION & TMDB AUTO-PULL ---
         $episodes = $parsedTitles | Where-Object { $_.Duration -ge 900 -and $_.Duration -le 5400 } | Sort-Object Id
         
         Write-Host "`n  --- TV SHOW DETECTED ---" -ForegroundColor Cyan
         $seasonNum = [int](Read-Host "  > What Season is this disc? (e.g., 1)")
         
-        # Download the Season Episode List from TMDB
+        # --- FIX: Robust Try/Catch for the Season API ---
         $seasonUri = "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNum?api_key=$tmdbApiKey"
-        $seasonData = Invoke-RestMethod -Uri $seasonUri -ErrorAction SilentlyContinue
+        try {
+            $seasonData = Invoke-RestMethod -Uri $seasonUri -ErrorAction Stop
+        } catch {
+            Write-Host "  > [WARNING] Failed to pull TMDB episode list (Check API Key). Falling back to manual entry." -ForegroundColor Yellow
+            $seasonData = $null
+        }
         
         Write-Host "`n  > Detected the following possible episodes on disc:" -ForegroundColor Yellow
         foreach ($ep in $episodes) {
@@ -162,7 +178,6 @@ foreach ($folder in $backups) {
         }
         $qualitySuffix = "$res Remux$hdr"
         
-        # Naming Logic
         if ($selectedMedia.media_type -eq 'movie') {
             $folderName = "$finalTitle ($finalYear) {tmdb-$tmdbId}"
             $fileName = "$finalTitle ($finalYear) {tmdb-$tmdbId} - $qualitySuffix.mkv"
@@ -172,11 +187,15 @@ foreach ($folder in $backups) {
             $folderName = "$finalTitle ($finalYear) {tmdb-$tmdbId}"
             $seasonFolder = "Season $($seasonNum.ToString('D2'))"
             
-            # --- FIX: AUTO-PULL EPISODE TITLE FROM TMDB ---
             $epTitle = ""
             if ($seasonData -and $seasonData.episodes) {
                 $tmdbEp = $seasonData.episodes | Where-Object { $_.episode_number -eq $tempEp }
                 if ($tmdbEp) { $epTitle = $tmdbEp.name }
+            }
+            
+            # Graceful Fallback: If TMDB didn't return a title, prompt the user
+            if ([string]::IsNullOrWhiteSpace($epTitle)) {
+                $epTitle = Read-Host "    > Enter Episode Title for S$($seasonNum.ToString('D2'))E$($tempEp.ToString('D2')) (Leave blank to skip)"
             }
             
             if ([string]::IsNullOrWhiteSpace($epTitle)) {
@@ -241,7 +260,7 @@ foreach ($folder in $backups) {
     $nasBackupDir = Join-Path $truenasBackups $volumeName
     $roboBackupArgs = @("$backupPath", "$nasBackupDir", "/E", "/MOVE", "/J", "/NP")
     & robocopy @roboBackupArgs | Out-Null
-    Remove-Item -Path $debugLogPath -ErrorAction SilentlyContinue
+    Remove-Item -Path $debugLog.Path -ErrorAction SilentlyContinue
     Write-Host "================================================="
     Write-Host "Finished processing $finalTitle! The raw backup and MKVs have been moved to TrueNAS." -ForegroundColor Green
 }
